@@ -3,6 +3,7 @@
 import json
 import logging
 import secrets
+import threading
 import time
 import uuid
 from decimal import Decimal
@@ -12,8 +13,9 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.config import (CLAVE_INTERNA, COLA_INVALIDACIONES, COLA_NOMBRE,
-                        COLA_PAUSA_PROCESAMIENTO_S, RABBITMQ_URL)
+from app.config import (CLAVE_INTERNA, COLA_CONSUMIDORES, COLA_INVALIDACIONES,
+                        COLA_NOMBRE, COLA_PAUSA_PROCESAMIENTO_S, COLA_PREFETCH,
+                        RABBITMQ_URL)
 from app.db import Sesion
 from app.modelos import ResultadoSolicitudCola
 from app.servicios import ejecutar_admision
@@ -101,7 +103,13 @@ def procesar(ch, metodo, propiedades, cuerpo):
         ch.basic_nack(delivery_tag=metodo.delivery_tag, requeue=True)
 
 
-def ejecutar():
+def _consumir_un_hilo():
+    """Bucle de consumo de un hilo: conexion y canal propios.
+
+    pika no permite compartir canales entre hilos, asi que cada consumidor
+    abre los suyos. Los mensajes se siguen confirmando uno por uno tras el
+    commit en base, igual que antes.
+    """
     while True:
         conexion = None
         try:
@@ -122,9 +130,10 @@ def ejecutar():
                     "x-dead-letter-routing-key": cola_fallidos,
                 },
             )
-            canal.basic_qos(prefetch_count=1)
+            canal.basic_qos(prefetch_count=COLA_PREFETCH)
             canal.basic_consume(queue=COLA_NOMBRE, on_message_callback=procesar)
-            LOG.info("Consumidor activo: cola=%s", COLA_NOMBRE)
+            LOG.info("Consumidor activo: cola=%s hilo=%s",
+                     COLA_NOMBRE, threading.current_thread().name)
             canal.start_consuming()
         except Exception:
             LOG.exception("Consumidor desconectado; reintentando")
@@ -132,6 +141,23 @@ def ejecutar():
         finally:
             if conexion is not None and conexion.is_open:
                 conexion.close()
+
+
+def ejecutar():
+    cantidad = max(1, COLA_CONSUMIDORES)
+    if cantidad == 1:
+        _consumir_un_hilo()
+        return
+    LOG.info("Iniciando %d consumidores en paralelo", cantidad)
+    hilos = [
+        threading.Thread(target=_consumir_un_hilo,
+                         name=f"consumidor-{i}", daemon=True)
+        for i in range(cantidad)
+    ]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join()
 
 
 if __name__ == "__main__":

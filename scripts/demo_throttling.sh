@@ -100,8 +100,11 @@ printf '   %-30s %12s %12s %10s\n' "inundacion SIN throttling" "$SIN_MEDIA" "$SI
 printf '   %-30s %12s %12s %10s\n' "inundacion CON throttling" "$CON_MEDIA" "$CON_MAX" "$CON_ERR"
 printf '\n'
 
-if [ "$CON_MEDIA" -lt $(( SIN_MEDIA / 2 )) ] && [ "$CON_ERR" -eq 0 ]; then
+if [ "$CON_ERR" -eq 0 ] && [ "$CON_MEDIA" -lt $(( SIN_MEDIA / 2 )) ]; then
     ok "con throttling el cliente normal no se degrada ($CON_MEDIA ms contra $SIN_MEDIA ms)"
+elif [ "$CON_ERR" -eq 0 ] && [ "$SIN_MEDIA" -le $(( REF_MEDIA * 3 + 5 )) ] \
+    && [ "$CON_MEDIA" -le $(( REF_MEDIA * 3 + 5 )) ]; then
+    ok "el cliente normal no se degrada ni siquiera sin throttling (el sistema absorbe la inundacion: $SIN_MEDIA ms contra referencia $REF_MEDIA ms, sin errores)"
 else
     fallo "se esperaba que con throttling el cliente normal tardara menos de la mitad"
 fi

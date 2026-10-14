@@ -40,3 +40,21 @@ COLA_NOMBRE = os.getenv("COLA_NOMBRE", "admision_paquetes")
 COLA_INVALIDACIONES = os.getenv("COLA_INVALIDACIONES", "cinta_cache_invalidada")
 COLA_PAUSA_PROCESAMIENTO_S = float(os.getenv("COLA_PAUSA_PROCESAMIENTO_S", 0))
 
+# Consumo en paralelo de la cola: cada consumidor tiene su propia conexion
+# AMQP y procesa un mensaje a la vez. Con uno solo, una rafaga de miles de
+# mensajes tarda mas que el plazo de sondeo del generador y la demo falla
+# aunque nada se haya perdido.
+COLA_CONSUMIDORES = int(float(os.getenv("COLA_CONSUMIDORES", 8)))
+COLA_PREFETCH = int(float(os.getenv("COLA_PREFETCH", 1)))
+
+# Hilos para el trabajo bloqueante de base de datos via asyncio.to_thread.
+HILOS_DB = int(float(os.getenv("HILOS_DB", 100)))
+
+# Pileta de conexiones hacia PostgreSQL. El valor original (5 mas 10) se
+# agotaba con rafagas de cientos de solicitudes concurrentes peleando por la
+# misma fila de cinta; el sobrante ahora espera con plazo y recibe 503 en vez
+# de quedarse sin respuesta.
+DB_POOL_SIZE = int(float(os.getenv("DB_POOL_SIZE", 20)))
+DB_MAX_OVERFLOW = int(float(os.getenv("DB_MAX_OVERFLOW", 30)))
+DB_POOL_TIMEOUT_S = int(float(os.getenv("DB_POOL_TIMEOUT_S", 30)))
+

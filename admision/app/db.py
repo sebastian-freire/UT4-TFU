@@ -7,12 +7,25 @@ from decimal import Decimal
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.config import CINTA_CAPACIDAD_KG, CINTA_ID, DATABASE_URL
+from app.config import (CINTA_CAPACIDAD_KG, CINTA_ID, DATABASE_URL,
+                        DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT_S)
 from app.repositorio import RepositorioCintaSQL
 
 INSTANCIA = socket.gethostname()
 
-motor = create_engine(DATABASE_URL, pool_pre_ping=True)
+motor = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_MAX_OVERFLOW,
+    pool_timeout=DB_POOL_TIMEOUT_S,
+    connect_args={
+        "connect_timeout": 5,
+        # Cota para cada sentencia, incluida la espera del bloqueo de fila.
+        # Convierte una espera eterna en un error 503 reintentable.
+        "options": "-c statement_timeout=20000",
+    },
+)
 Sesion = sessionmaker(bind=motor, expire_on_commit=False)
 repo = RepositorioCintaSQL()
 

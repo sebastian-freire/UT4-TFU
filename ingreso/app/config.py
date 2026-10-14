@@ -39,6 +39,11 @@ COLA_INVALIDACIONES = os.getenv("COLA_INVALIDACIONES", "cinta_cache_invalidada")
 CINTA_POR_DEFECTO = os.getenv("CINTA_ID", "C1")
 TIMEOUT_ADMISION_S = float(os.getenv("TIMEOUT_ADMISION_S", 10))
 
+# Hilos para el trabajo bloqueante (publicacion AMQP via asyncio.to_thread).
+# Acota la concurrencia real contra RabbitMQ: el sobrante espera en el bucle
+# de eventos en vez de abrir cientos de conexiones a la vez.
+HILOS_MAX = int(float(os.getenv("HILOS_MAX", 64)))
+
 # UT4 - Plazo de los chequeos de /health/ready.
 TIMEOUT_SALUD_S = float(os.getenv("TIMEOUT_SALUD_S", 2))
 

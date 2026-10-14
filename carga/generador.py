@@ -150,11 +150,19 @@ def cola(args):
             print(f"  respuesta inmediata HTTP {codigo}: {cantidad}")
     print(f"  tiempo para aceptar la rafaga: {fin_envios - inicio:.2f} s")
 
+    # Sondeo de resultados. Solo HTTP 200 es terminal: 202 significa que el
+    # trabajador aun no llega, y cualquier otro codigo (0 por timeout, 429,
+    # 503 por saturacion) es transitorio y se reintenta hasta el plazo de
+    # vaciado. La version anterior contaba esos fallos como resultados
+    # finales y vaciaba el conjunto de pendientes sin haber terminado.
     pendientes = set(encoladas)
     resultados = Counter()
-    limite = fin_envios + args.timeout
-    with ThreadPoolExecutor(max_workers=args.c) as pool:
-        while pendientes and time.perf_counter() < limite:
+    transitorios = 0
+    tope_sondeo = fin_envios + args.drain_timeout
+    hilos_sondeo = max(1, min(args.c, args.poll_workers))
+    espera = args.poll_interval
+    with ThreadPoolExecutor(max_workers=hilos_sondeo) as pool:
+        while pendientes and time.perf_counter() < tope_sondeo:
             lote = list(pendientes)
             estados = list(pool.map(
                 lambda solicitud_id: solicitar(
@@ -165,19 +173,23 @@ def cola(args):
             for solicitud_id, (codigo, _, _, texto) in zip(lote, estados):
                 if codigo == 202:
                     continue
-                pendientes.discard(solicitud_id)
                 if codigo == 200:
+                    pendientes.discard(solicitud_id)
                     try:
                         resultados[json.loads(texto).get("estado", "desconocido")] += 1
                     except json.JSONDecodeError:
                         resultados["respuesta invalida"] += 1
                 else:
-                    resultados[f"HTTP {codigo}"] += 1
+                    transitorios += 1
             if pendientes:
-                time.sleep(args.poll_interval)
+                time.sleep(espera)
+                espera = min(espera * 1.25, 5.0)
 
     final = time.perf_counter()
     print(f"  resultados finales : {dict(sorted(resultados.items()))}")
+    if transitorios:
+        print(f"  sondeos transitorios reintentados: {transitorios} "
+              f"(timeouts o 429/503 durante el vaciado, no son resultados)")
     print(f"  solicitudes aun pendientes: {len(pendientes)}")
     print(f"  tiempo desde inicio hasta vaciar la rafaga: {final - inicio:.2f} s")
 
@@ -193,7 +205,12 @@ analizador.add_argument("--segundos", type=float, help="mandar durante S segundo
 analizador.add_argument("--ejemplos", action="store_true", help="mostrar una respuesta por codigo")
 analizador.add_argument("--api-key", help="API Key externa opcional")
 analizador.add_argument("--estado-url", help="URL base para consultar estados de solicitudes encoladas")
-analizador.add_argument("--poll-interval", type=float, default=0.05)
+analizador.add_argument("--poll-interval", type=float, default=0.5,
+                        help="pausa inicial entre rondas de sondeo (con retroceso suave)")
+analizador.add_argument("--poll-workers", type=int, default=50,
+                        help="hilos para el sondeo, acotados para no saturar al servidor")
+analizador.add_argument("--drain-timeout", type=float, default=120,
+                        help="plazo total para vaciar la cola tras aceptar la rafaga")
 
 args = analizador.parse_args()
 if args.modo == "cola" and not args.estado_url:

@@ -17,8 +17,8 @@ if [ "$CODIGO_READY" != "200" ]; then
     exit $?
 fi
 
-N=40
-CONCURRENCIA=40
+N="${N:-3000}"
+CONCURRENCIA="${CONCURRENCIA:-500}"
 URL_SYNC="http://balanceador:82/paquetes"
 URL_COLA="http://balanceador:82/paquetes/cola"
 URL_ESTADO="http://balanceador:82/solicitudes"
@@ -28,8 +28,12 @@ nota "Ambas pruebas usan la entrada interna 82 para aislar la cola del"
 nota "throttling de NGINX; la ruta publica y las demos actuales no cambian."
 nota "Se compara latencia p95 de respuesta, tiempo de vaciado y resultados."
 
-paso "Construyendo el generador con el modo de cola actual"
-dc build generador
+paso "Reconstruyendo servicios y generador con los cambios actuales"
+dc build ingreso admision procesador_cola generador
+# force-recreate: la plantilla de nginx solo se procesa al arrancar, asi que
+# un simple up no aplicaria cambios de nginx.conf ni reabriria conexiones.
+dc up -d --force-recreate balanceador ingreso admision procesador_cola
+esperar
 
 seccion "Q.1  Rafaga sincronica: el cliente espera la admision"
 reiniciar_cinta
@@ -43,7 +47,8 @@ seccion "Q.2  Misma rafaga encolada: respuesta al confirmar el mensaje"
 reiniciar_cinta
 SALIDA_COLA="$(generador cola --n "$N" --c "$CONCURRENCIA" \
     --url "$URL_COLA" --estado-url "$URL_ESTADO" \
-    --cuerpo "$PAQUETE_10KG")"
+    --cuerpo "$PAQUETE_10KG" --drain-timeout 180 \
+    --poll-interval 0.5 --poll-workers 50)"
 printf '%s\n' "$SALIDA_COLA"
 COLA_P95="$(printf '%s\n' "$SALIDA_COLA" | sed -n 's/.*p95 \([0-9.]*\) ms.*/\1/p')"
 COLA_ACEPTADAS="$(printf '%s\n' "$SALIDA_COLA" | sed -n 's/.*aceptadas por la cola: \([0-9][0-9]*\).*/\1/p')"

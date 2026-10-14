@@ -6,11 +6,20 @@ import threading
 import time
 
 import pika
+from pika.exceptions import AMQPError
 
 from app.config import (CLAVE_INTERNA, COLA_INVALIDACIONES, COLA_NOMBRE,
                         RABBITMQ_URL)
 
 LOG = logging.getLogger("cola_ingreso")
+
+# Cada hilo de publicacion conserva su conexion y su canal. pika no permite
+# compartir conexiones entre hilos, pero abrir una conexion nueva por cada
+# solicitud HTTP (apreton de manos TCP y AMQP, declaracion de cola y cierre)
+# cuesta decenas de ms y agota al broker con rafagas de cientos de
+# solicitudes concurrentes. Reutilizar el canal del hilo deja el costo de
+# publicacion en el orden de 1 ms.
+_estado_hilo = threading.local()
 
 
 def _parametros():
@@ -25,25 +34,63 @@ def verificar_broker():
     conexion.close()
 
 
+def _cerrar_canal_de_hilo():
+    for nombre in ("canal", "conexion"):
+        objeto = getattr(_estado_hilo, nombre, None)
+        try:
+            if objeto is not None and objeto.is_open:
+                objeto.close()
+        except Exception:
+            pass
+        _estado_hilo.__dict__.pop(nombre, None)
+
+
+def _canal_de_hilo():
+    """Devuelve el canal persistente del hilo actual, reconectando si hizo falta."""
+    conexion = getattr(_estado_hilo, "conexion", None)
+    canal = getattr(_estado_hilo, "canal", None)
+    if (conexion is not None and conexion.is_open
+            and canal is not None and canal.is_open):
+        return canal
+    _cerrar_canal_de_hilo()
+    conexion = pika.BlockingConnection(_parametros())
+    canal = conexion.channel()
+    canal.confirm_delivery()
+    canal.queue_declare(queue=COLA_NOMBRE, durable=True, arguments={
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": f"{COLA_NOMBRE}.fallidos",
+    })
+    _estado_hilo.conexion = conexion
+    _estado_hilo.canal = canal
+    return canal
+
+
 def publicar(solicitud: dict):
-    with pika.BlockingConnection(_parametros()) as conexion:
-        canal = conexion.channel()
-        canal.confirm_delivery()
-        canal.queue_declare(queue=COLA_NOMBRE, durable=True, arguments={
-            "x-dead-letter-exchange": "",
-            "x-dead-letter-routing-key": f"{COLA_NOMBRE}.fallidos",
-        })
-        canal.basic_publish(
-            exchange="",
-            routing_key=COLA_NOMBRE,
-            body=json.dumps(solicitud).encode(),
-            properties=pika.BasicProperties(
-                content_type="application/json",
-                delivery_mode=2,
-                headers={"clave_interna": CLAVE_INTERNA},
-            ),
-            mandatory=True,
-        )
+    """Publica un mensaje durable reutilizando el canal del hilo.
+
+    Ante un error de AMQP se descarta el canal roto, se reconecta y se
+    reintenta una sola vez. La operacion es idempotente porque el trabajador
+    ignora solicitudes con un solicitud_id ya registrado.
+    """
+    cuerpo = json.dumps(solicitud).encode()
+    propiedades = pika.BasicProperties(
+        content_type="application/json",
+        delivery_mode=2,
+        headers={"clave_interna": CLAVE_INTERNA},
+    )
+    argumentos = {
+        "exchange": "",
+        "routing_key": COLA_NOMBRE,
+        "body": cuerpo,
+        "properties": propiedades,
+        "mandatory": True,
+    }
+    try:
+        _canal_de_hilo().basic_publish(**argumentos)
+    except AMQPError:
+        LOG.warning("canal AMQP roto; se reconecta y se reintenta una vez")
+        _cerrar_canal_de_hilo()
+        _canal_de_hilo().basic_publish(**argumentos)
 
 
 def _escuchar_invalidaciones(cache):
